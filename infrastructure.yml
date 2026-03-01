@@ -1,16 +1,14 @@
-AWSTemplateFormatVersion: "2010-09-09"
-Description: >
-  SpaceX Launches - Infraestructura completa
-  Incluye: DynamoDB, IAM Roles, Lambda, EventBridge, Secrets Manager
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  SpaceX Launches - Infraestructura completa Incluye: DynamoDB, IAM Roles, Lambda, EventBridge, Secrets Manager
 
-# ─────────────────────────────────────────
-# PARÁMETROS
-# ─────────────────────────────────────────
 Parameters:
   Environment:
     Type: String
     Default: prod
-    AllowedValues: [dev, prod]
+    AllowedValues:
+      - dev
+      - prod
     Description: Entorno de despliegue
 
   LambdaFunctionName:
@@ -21,20 +19,17 @@ Parameters:
     Type: String
     Default: https://api.spacexdata.com/v4/launches
 
-# ─────────────────────────────────────────
-# RECURSOS
-# ─────────────────────────────────────────
 Resources:
 
   # ── 1. DYNAMODB ──────────────────────────
   SpacexLaunchesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: spaces_launches
-      BillingMode: PAY_PER_REQUEST        # On-demand (Bajo demanda)
+      TableName: !Sub spaces_launches_${AWS::StackName}
+      BillingMode: PAY_PER_REQUEST
       TableClass: STANDARD
       SSESpecification:
-        SSEEnabled: false                 # Clave propiedad de AWS (default)
+        SSEEnabled: false
       AttributeDefinitions:
         - AttributeName: launch_id
           AttributeType: S
@@ -42,7 +37,7 @@ Resources:
           AttributeType: S
       KeySchema:
         - AttributeName: launch_id
-          KeyType: HASH                   # Partition key
+          KeyType: HASH
       GlobalSecondaryIndexes:
         - IndexName: date_utc-index
           KeySchema:
@@ -56,13 +51,12 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ── 2. IAM ROLE para Lambda ───────────────
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: spacex-lambda-execution-role
+      RoleName: !Sub spacex-lambda-execution-role-${AWS::StackName}
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+        Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
@@ -73,7 +67,7 @@ Resources:
       Policies:
         - PolicyName: DynamoDBAccess
           PolicyDocument:
-            Version: "2012-10-17"
+            Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
@@ -85,9 +79,8 @@ Resources:
                   - dynamodb:Scan
                 Resource:
                   - !GetAtt SpacexLaunchesTable.Arn
-                  - !Sub "${SpacexLaunchesTable.Arn}/index/*"
+                  - !Sub ${SpacexLaunchesTable.Arn}/index/*
 
-  # ── 3. LAMBDA FUNCTION ───────────────────
   SpacexLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -112,7 +105,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ── 4. LAMBDA FUNCTION URL (invocación manual) ──
   LambdaFunctionUrl:
     Type: AWS::Lambda::Url
     Properties:
@@ -120,7 +112,7 @@ Resources:
       AuthType: NONE
       Cors:
         AllowOrigins:
-          - "*"
+          - '*'
         AllowMethods:
           - GET
           - POST
@@ -130,10 +122,9 @@ Resources:
     Properties:
       FunctionName: !Ref SpacexLambdaFunction
       Action: lambda:InvokeFunctionUrl
-      Principal: "*"
+      Principal: '*'
       FunctionUrlAuthType: NONE
 
-  # ── 5. EVENTBRIDGE (trigger cada 6 horas) ──
   SpacexScheduleRule:
     Type: AWS::Events::Rule
     Properties:
@@ -153,13 +144,12 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt SpacexScheduleRule.Arn
 
-  # ── 6. IAM ROLE para ECS Task Execution ──
   EcsTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: ecsTaskExecutionRole
+      RoleName: !Sub ecsTaskExecutionRole-${AWS::StackName}
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+        Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
@@ -170,11 +160,10 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - arn:aws:iam::aws:policy/SecretsManagerReadWrite
 
-  # ── 7. SECRETS MANAGER ───────────────────
   BackendSecrets:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: spacex-backend-secrets
+      Name: !Sub spacex-backend-secrets-${AWS::StackName}
       Description: Variables de entorno para el backend de SpaceX
       SecretString: !Sub |
         {
@@ -187,15 +176,12 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-# ─────────────────────────────────────────
-# OUTPUTS
-# ─────────────────────────────────────────
 Outputs:
   DynamoDBTableName:
     Description: Nombre de la tabla DynamoDB
     Value: !Ref SpacexLaunchesTable
     Export:
-      Name: !Sub "${AWS::StackName}-TableName"
+      Name: !Sub ${AWS::StackName}-TableName
 
   DynamoDBTableArn:
     Description: ARN de la tabla DynamoDB
