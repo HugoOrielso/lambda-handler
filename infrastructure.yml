@@ -21,7 +21,6 @@ Parameters:
 
 Resources:
 
-  # ── 1. DYNAMODB ──────────────────────────
   SpacexLaunchesTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -159,17 +158,34 @@ Resources:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      Policies:
+        - PolicyName: DynamoDBReadAccessForBackend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !GetAtt SpacexLaunchesTable.Arn
+                  - !Sub ${SpacexLaunchesTable.Arn}/index/*
 
   BackendSecrets:
     Type: AWS::SecretsManager::Secret
+    DependsOn: SpacexLaunchesTable
     Properties:
-      Name: !Sub spacex-backend-secrets-${AWS::StackName}
+      Name: spacex-backend-secrets
       Description: Variables de entorno para el backend de SpaceX
-      SecretString: !Sub |
-        {
-          "TABLE_NAME": "spaces_launches",
-          "PORT": "4000"
-        }
+      SecretString: !Sub
+        - |
+          {
+            "TABLE_NAME": "${TableName}",
+            "PORT": "4000"
+          }
+        - TableName: !Ref SpacexLaunchesTable
       Tags:
         - Key: Project
           Value: spacex-launches
@@ -198,3 +214,7 @@ Outputs:
   EcsTaskExecutionRoleArn:
     Description: ARN del rol de ECS Task Execution
     Value: !GetAtt EcsTaskExecutionRole.Arn
+
+  BackendSecretsArn:
+    Description: ARN del secreto del backend
+    Value: !Ref BackendSecrets
