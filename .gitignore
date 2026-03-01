@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# Lambda package
+package/
+lambda-deployment.zip
+
+# IDE
+.vscode/
+.idea/
+
+# Env
+.env
+```
+
+**`requirements.txt`** debe tener solo las dependencias de producción:
+```
+boto3
+requests
+botocore
