@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SpaceX Launches - Infraestructura completa
+  Incluye: DynamoDB, IAM Roles, Lambda, EventBridge, Secrets Manager
+
+# ─────────────────────────────────────────
+# PARÁMETROS
+# ─────────────────────────────────────────
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Entorno de despliegue
+
+  LambdaFunctionName:
+    Type: String
+    Default: spacex-launches-handler
+
+  SpaceXApiUrl:
+    Type: String
+    Default: https://api.spacexdata.com/v4/launches
+
+# ─────────────────────────────────────────
+# RECURSOS
+# ─────────────────────────────────────────
+Resources:
+
+  # ── 1. DYNAMODB ──────────────────────────
+  SpacexLaunchesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: spaces_launches
+      BillingMode: PAY_PER_REQUEST        # On-demand (Bajo demanda)
+      TableClass: STANDARD
+      SSESpecification:
+        SSEEnabled: false                 # Clave propiedad de AWS (default)
+      AttributeDefinitions:
+        - AttributeName: launch_id
+          AttributeType: S
+        - AttributeName: date_utc
+          AttributeType: S
+      KeySchema:
+        - AttributeName: launch_id
+          KeyType: HASH                   # Partition key
+      GlobalSecondaryIndexes:
+        - IndexName: date_utc-index
+          KeySchema:
+            - AttributeName: date_utc
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: spacex-launches
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── 2. IAM ROLE para Lambda ───────────────
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: spacex-lambda-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt SpacexLaunchesTable.Arn
+                  - !Sub "${SpacexLaunchesTable.Arn}/index/*"
+
+  # ── 3. LAMBDA FUNCTION ───────────────────
+  SpacexLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SpacexLaunchesTable
+          SPACEX_URL: !Ref SpaceXApiUrl
+      Code:
+        ZipFile: |
+          # Placeholder - el código real se despliega via GitHub Actions
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "placeholder"}
+      Tags:
+        - Key: Project
+          Value: spacex-launches
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── 4. LAMBDA FUNCTION URL (invocación manual) ──
+  LambdaFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref SpacexLambdaFunction
+      AuthType: NONE
+      Cors:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+
+  LambdaFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SpacexLambdaFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  # ── 5. EVENTBRIDGE (trigger cada 6 horas) ──
+  SpacexScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: spacex-launches-every-6h
+      Description: Ejecuta la Lambda de SpaceX cada 6 horas
+      ScheduleExpression: rate(6 hours)
+      State: ENABLED
+      Targets:
+        - Id: SpacexLambdaTarget
+          Arn: !GetAtt SpacexLambdaFunction.Arn
+
+  SpacexSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SpacexLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SpacexScheduleRule.Arn
+
+  # ── 6. IAM ROLE para ECS Task Execution ──
+  EcsTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecsTaskExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+
+  # ── 7. SECRETS MANAGER ───────────────────
+  BackendSecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: spacex-backend-secrets
+      Description: Variables de entorno para el backend de SpaceX
+      SecretString: !Sub |
+        {
+          "TABLE_NAME": "spaces_launches",
+          "PORT": "4000"
+        }
+      Tags:
+        - Key: Project
+          Value: spacex-launches
+        - Key: Environment
+          Value: !Ref Environment
+
+# ─────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────
+Outputs:
+  DynamoDBTableName:
+    Description: Nombre de la tabla DynamoDB
+    Value: !Ref SpacexLaunchesTable
+    Export:
+      Name: !Sub "${AWS::StackName}-TableName"
+
+  DynamoDBTableArn:
+    Description: ARN de la tabla DynamoDB
+    Value: !GetAtt SpacexLaunchesTable.Arn
+
+  LambdaFunctionArn:
+    Description: ARN de la Lambda
+    Value: !GetAtt SpacexLambdaFunction.Arn
+
+  LambdaFunctionUrl:
+    Description: URL para invocar la Lambda manualmente
+    Value: !GetAtt LambdaFunctionUrl.FunctionUrl
+
+  EcsTaskExecutionRoleArn:
+    Description: ARN del rol de ECS Task Execution
+    Value: !GetAtt EcsTaskExecutionRole.Arn
