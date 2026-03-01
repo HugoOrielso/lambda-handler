@@ -3,13 +3,7 @@ name: Deploy Lambda
 on:
   push:
     branches: [main]
-    paths:
-      - "lambda_function.py"
-      - "requirements.txt"
-      - "test/**"
-      - ".github/workflows/deploy-lambda.yml"
   workflow_dispatch:
-
 env:
   AWS_REGION: us-east-2
   LAMBDA_FUNCTION_NAME: spacex-launches-handler
