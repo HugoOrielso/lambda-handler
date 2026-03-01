@@ -1,6 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
-  SpaceX Launches - Infraestructura completa Incluye: DynamoDB, IAM Roles, Lambda, EventBridge, Secrets Manager
+  SpaceX Launches - Infraestructura completa. Incluye: DynamoDB, IAM Roles, Lambda, EventBridge.
+  NOTA: El secreto spacex-backend-secrets se gestiona manualmente fuera de CloudFormation
+  para evitar sufijos aleatorios en cada deploy. Crearlo una vez con:
+  aws secretsmanager create-secret --name spacex-backend-secrets
+    --secret-string '{"TABLE_NAME":"spaces_launches_spacex-infra","PORT":"4000"}'
+    --region us-east-2
 
 Parameters:
   Environment:
@@ -23,8 +28,10 @@ Resources:
 
   SpacexLaunchesTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      TableName: !Sub spaces_launches_${AWS::StackName}
+      TableName: spaces_launches_spacex-infra
       BillingMode: PAY_PER_REQUEST
       TableClass: STANDARD
       SSESpecification:
@@ -53,7 +60,7 @@ Resources:
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub spacex-lambda-execution-role-${AWS::StackName}
+      RoleName: spacex-lambda-execution-role-spacex-infra
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -91,7 +98,7 @@ Resources:
       MemorySize: 256
       Environment:
         Variables:
-          TABLE_NAME: !Ref SpacexLaunchesTable
+          TABLE_NAME: spaces_launches_spacex-infra
           SPACEX_URL: !Ref SpaceXApiUrl
       Code:
         ZipFile: |
@@ -146,7 +153,7 @@ Resources:
   EcsTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub ecsTaskExecutionRole-${AWS::StackName}
+      RoleName: ecsTaskExecutionRole-spacex-infra
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -173,25 +180,6 @@ Resources:
                   - !GetAtt SpacexLaunchesTable.Arn
                   - !Sub ${SpacexLaunchesTable.Arn}/index/*
 
-  BackendSecrets:
-    Type: AWS::SecretsManager::Secret
-    DependsOn: SpacexLaunchesTable
-    Properties:
-      Name: spacex-backend-secrets
-      Description: Variables de entorno para el backend de SpaceX
-      SecretString: !Sub
-        - |
-          {
-            "TABLE_NAME": "${TableName}",
-            "PORT": "4000"
-          }
-        - TableName: !Ref SpacexLaunchesTable
-      Tags:
-        - Key: Project
-          Value: spacex-launches
-        - Key: Environment
-          Value: !Ref Environment
-
 Outputs:
   DynamoDBTableName:
     Description: Nombre de la tabla DynamoDB
@@ -214,7 +202,3 @@ Outputs:
   EcsTaskExecutionRoleArn:
     Description: ARN del rol de ECS Task Execution
     Value: !GetAtt EcsTaskExecutionRole.Arn
-
-  BackendSecretsArn:
-    Description: ARN del secreto del backend
-    Value: !Ref BackendSecrets
