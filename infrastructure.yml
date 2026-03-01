@@ -1,11 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
   SpaceX Launches - Infraestructura completa. Incluye: DynamoDB, IAM Roles, Lambda, EventBridge.
-  NOTA: El secreto spacex-backend-secrets se gestiona manualmente fuera de CloudFormation
-  para evitar sufijos aleatorios en cada deploy. Crearlo una vez con:
-  aws secretsmanager create-secret --name spacex-backend-secrets
-    --secret-string '{"TABLE_NAME":"spaces_launches_spacex-infra","PORT":"4000"}'
-    --region us-east-2
+  NOTA: El secreto spacex-backend-secrets se gestiona manualmente fuera de CloudFormation.
+  Antes de desplegar este stack por primera vez, crear el secreto con:
+    aws secretsmanager create-secret \
+      --name spacex-backend-secrets \
+      --secret-string '{"TABLE_NAME":"spaces_launches_spacex-infra","PORT":"4000"}' \
+      --region us-east-2
 
 Parameters:
   Environment:
@@ -179,6 +180,24 @@ Resources:
                 Resource:
                   - !GetAtt SpacexLaunchesTable.Arn
                   - !Sub ${SpacexLaunchesTable.Arn}/index/*
+        - PolicyName: DynamoDBFullAccessForBackend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:BatchGetItem
+                Resource:
+                  - arn:aws:dynamodb:us-east-2:148761674962:table/spaces_launches_spacex-infra
+                  - arn:aws:dynamodb:us-east-2:148761674962:table/spaces_launches_spacex-infra/index/*
 
 Outputs:
   DynamoDBTableName:

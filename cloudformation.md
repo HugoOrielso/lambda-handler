@@ -70,15 +70,33 @@ Guarda la URL del repositorio — tendrá el formato:
 
 ## Despliegue de infraestructura con CloudFormation
 
-El archivo `infrastructure.yml` en la raíz del repositorio crea todos los recursos base:
+El archivo `infrastructure.yml` crea todos los recursos base:
 
-- Tabla **DynamoDB** (`spaces_launches_spacex-infra`)
+- Tabla **DynamoDB** (`spaces_launches_spacex-infra`) — nombre fijo, no cambia entre deploys
 - **Lambda** placeholder (`spacex-launches-handler`)
 - **EventBridge Rule** (ejecución cada 6 horas)
-- **IAM Roles** para Lambda y ECS
-- **Secrets Manager** con variables de entorno del backend
+- **IAM Roles** para Lambda y ECS (con permisos de DynamoDB incluidos)
 
-### Paso 1: Validar el template
+> ⚠️ **IMPORTANTE:** El secreto `spacex-backend-secrets` se gestiona **manualmente fuera de CloudFormation** para evitar que se recree con sufijos aleatorios en cada deploy. Sigue el orden exacto de los pasos a continuación.
+
+### Paso 1: Crear el secreto manualmente (solo la primera vez)
+
+```bash
+aws secretsmanager create-secret \
+  --name spacex-backend-secrets \
+  --secret-string '{"TABLE_NAME":"spaces_launches_spacex-infra","PORT":"4000"}' \
+  --region us-east-2
+```
+
+> Si el secreto ya existe, actualízalo:
+> ```bash
+> aws secretsmanager update-secret \
+>   --secret-id spacex-backend-secrets \
+>   --secret-string '{"TABLE_NAME":"spaces_launches_spacex-infra","PORT":"4000"}' \
+>   --region us-east-2
+> ```
+
+### Paso 2: Validar el template
 
 ```bash
 aws cloudformation validate-template \
@@ -86,7 +104,7 @@ aws cloudformation validate-template \
   --region us-east-2
 ```
 
-### Paso 2: Desplegar el stack
+### Paso 3: Desplegar el stack
 
 ```bash
 aws cloudformation deploy \
@@ -103,7 +121,7 @@ El proceso tarda aproximadamente 3-5 minutos. Al finalizar verás:
 Successfully created/updated stack - spacex-infra
 ```
 
-### Paso 3: Verificar los outputs
+### Paso 4: Verificar los outputs
 
 ```bash
 aws cloudformation describe-stacks \
@@ -113,57 +131,65 @@ aws cloudformation describe-stacks \
   --output table
 ```
 
-Esto muestra el nombre de la tabla DynamoDB, ARN de la Lambda, URL de la función y ARN del rol ECS.
-
-### ⚠️ Notas importantes
-
-- Si ya existen recursos con los mismos nombres (Lambda, EventBridge rule), elimínalos antes de desplegar:
-
-```bash
-# Eliminar Lambda existente
-aws lambda delete-function \
-  --function-name spacex-launches-handler \
-  --region us-east-2
-
-# Eliminar regla de EventBridge
-aws events delete-rule \
-  --name spacex-launches-every-6h \
-  --region us-east-2
-```
-
-- Si el stack queda en estado `ROLLBACK_COMPLETE`, elimínalo y vuelve a desplegarlo:
-
-```bash
-aws cloudformation delete-stack \
-  --stack-name spacex-infra \
-  --region us-east-2
-```
-
 ---
 
 ## Eliminar y redesplegar desde cero
 
-Si necesitas limpiar todo y volver a desplegar (por ejemplo, para probar el flujo completo):
+Si necesitas limpiar todo y volver a desplegar, sigue este orden exacto:
 
-### Paso 1: Eliminar el stack de CloudFormation
+### Paso 1: Borrar el secreto forzando eliminación inmediata
 
 ```bash
+aws secretsmanager delete-secret \
+  --secret-id spacex-backend-secrets \
+  --force-delete-without-recovery \
+  --region us-east-2
+```
+
+> **¿Por qué?** Secrets Manager marca los secretos para borrar en 7 días por defecto. Si no fuerzas el borrado inmediato, CloudFormation no podrá crear un secreto con el mismo nombre.
+
+### Paso 2: Eliminar el stack
+
+```bash
+# 1. Borrar secreto inmediatamente
+aws secretsmanager delete-secret \
+  --secret-id spacex-backend-secrets \
+  --force-delete-without-recovery \
+  --region us-east-2
+
+# 2. Borrar tabla DynamoDB manualmente (porque Retain la protege)
+aws dynamodb delete-table \
+  --table-name spaces_launches_spacex-infra \
+  --region us-east-2
+
+# 3. Esperar que la tabla se elimine
+aws dynamodb wait table-not-exists \
+  --table-name spaces_launches_spacex-infra \
+  --region us-east-2
+
+# 4. Eliminar el stack
 aws cloudformation delete-stack \
   --stack-name spacex-infra \
   --region us-east-2
-```
 
-### Paso 2: Esperar a que se elimine completamente
-
-```bash
-aws cloudformation describe-stacks \
+# 5. Esperar que el stack se elimine
+aws cloudformation wait stack-delete-complete \
   --stack-name spacex-infra \
   --region us-east-2
 ```
 
-Cuando veas el error `Stack with id spacex-infra does not exist` significa que todos los recursos fueron eliminados correctamente (DynamoDB, Lambda, EventBridge, IAM roles, Secrets Manager).
 
-### Paso 3: Redesplegar la infraestructura
+
+### Paso 3: Recrear el secreto manualmente
+
+```bash
+aws secretsmanager create-secret \
+  --name spacex-backend-secrets \
+  --secret-string '{"TABLE_NAME":"spaces_launches_spacex-infra","PORT":"4000"}' \
+  --region us-east-2
+```
+
+### Paso 4: Redesplegar la infraestructura
 
 ```bash
 aws cloudformation deploy \
@@ -174,7 +200,27 @@ aws cloudformation deploy \
   --region us-east-2
 ```
 
-### Paso 4: Redesplegar el código de la Lambda
+### Paso 6: Registrar y desplegar el task-definition del backend
+
+```bash
+# Desde la carpeta backend/
+aws ecs register-task-definition \
+  --cli-input-json file://task-definition.json \
+  --region us-east-2 \
+  --query 'taskDefinition.taskDefinitionArn' \
+  --output text
+```
+
+```bash
+aws ecs update-service \
+  --cluster spacex-cluster \
+  --service spacex-backend-service \
+  --task-definition spacex-backend-task \
+  --force-new-deployment \
+  --region us-east-2
+```
+
+### Paso 7: Redesplegar el código de la Lambda
 
 Corre el workflow de GitHub Actions para la Lambda, o manualmente:
 
@@ -186,17 +232,47 @@ aws lambda invoke \
   response.json && cat response.json
 ```
 
-### Paso 5: Redesplegar el backend en ECS
-
-Corre el workflow de GitHub Actions para el backend (push a `main` o trigger manual desde Actions).
-
-> ⚠️ **Importante:** Al eliminar el stack, el secret `spacex-backend-secrets` también se elimina. CloudFormation lo recrea automáticamente con el `TABLE_NAME` correcto al redesplegar.
-
 ---
 
 ## Despliegue de la función Lambda
 
 El código real de la Lambda se despliega automáticamente via **GitHub Actions** al hacer push a `main`.
+
+---
+
+### 
+
+**En caso de que tu backend después de desplegar no corra por permisos esto es lo que debes hacer en la carpeta donde esté tu backend y el task-definition.json** 
+
+# 1. Obtener el sufijo actual del secreto
+SECRET_ARN=$(aws secretsmanager describe-secret \
+  --secret-id spacex-backend-secrets \
+  --region us-east-2 \
+  --query 'ARN' \
+  --output text)
+
+# 2. Actualizar task-definition con el nuevo ARN
+sed -i "s|spacex-backend-secrets-[A-Za-z0-9]*|${SECRET_ARN##*:secret:}|g" task-definition.json
+
+# 3. Agregar permisos DynamoDB al rol
+aws iam put-role-policy \
+  --role-name ecsTaskExecutionRole-spacex-infra \
+  --policy-name DynamoDBFullAccess \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["dynamodb:Scan","dynamodb:Query","dynamodb:GetItem","dynamodb:DescribeTable"],"Resource":["arn:aws:dynamodb:us-east-2:148761674962:table/spaces_launches_spacex-infra","arn:aws:dynamodb:us-east-2:148761674962:table/spaces_launches_spacex-infra/index/*"]}]}'
+
+# 4. Registrar y desplegar
+aws ecs register-task-definition \
+  --cli-input-json file://task-definition.json \
+  --region us-east-2 \
+  --query 'taskDefinition.taskDefinitionArn' \
+  --output text
+
+aws ecs update-service \
+  --cluster spacex-cluster \
+  --service spacex-backend-service \
+  --task-definition spacex-backend-task \
+  --force-new-deployment \
+  --region us-east-2
 
 ### Configurar secretos en GitHub
 
@@ -229,6 +305,12 @@ La respuesta incluye un resumen del procesamiento:
 }
 ```
 
+También puedes invocarla desde la Function URL pública:
+
+```
+GET https://x2j244r7gcqo4bljyuqnwifayi0ruvxm.lambda-url.us-east-2.on.aws/
+```
+
 ### Ejecución automática
 
 La Lambda se ejecuta automáticamente cada 6 horas via EventBridge para mantener DynamoDB actualizado con los últimos lanzamientos de SpaceX.
@@ -248,9 +330,26 @@ Los siguientes recursos deben existir antes del primer deploy:
 - **ECS Service**: `spacex-backend-service`
 - **Task Definition**: `spacex-backend-task`
 
-### Configuración del Target Group (health check)
+### Configuración del Task Definition
 
-Asegúrate de que el health check del Target Group esté configurado así:
+El archivo `task-definition.json` en `backend/` referencia el secreto por su ARN fijo:
+
+```json
+"secrets": [
+  {
+    "name": "TABLE_NAME",
+    "valueFrom": "arn:aws:secretsmanager:us-east-2:148761674962:secret:spacex-backend-secrets-E4UVIt:TABLE_NAME::"
+  },
+  {
+    "name": "PORT",
+    "valueFrom": "arn:aws:secretsmanager:us-east-2:148761674962:secret:spacex-backend-secrets-E4UVIt:PORT::"
+  }
+]
+```
+
+> ⚠️ El sufijo `E4UVIt` es fijo — es el ARN del secreto que fue creado manualmente y nunca se recrea. No cambies este valor.
+
+### Configuración del Target Group (health check)
 
 | Campo | Valor |
 |-------|-------|
@@ -258,17 +357,6 @@ Asegúrate de que el health check del Target Group esté configurado así:
 | Puerto | 4000 |
 | Ruta | `/health` |
 | Códigos de éxito | `200` |
-
-### Variables de entorno del backend
-
-Las variables se obtienen de **Secrets Manager** (`spacex-backend-secrets`):
-
-```json
-{
-  "TABLE_NAME": "spaces_launches_spacex-infra",
-  "PORT": "4000"
-}
-```
 
 ### Pipeline CI/CD automático
 
@@ -280,19 +368,33 @@ El workflow de GitHub Actions se activa con cada push a `main` y ejecuta:
 4. Actualiza el Task Definition con la nueva imagen
 5. Despliega en ECS Fargate y espera estabilización
 
-### Despliegue manual (si se necesita)
+### Despliegue manual del backend
 
 ```bash
-# Build y push de imagen
-aws ecr get-login-password --region us-east-2 | \
-  docker login --username AWS --password-stdin \
-  <account-id>.dkr.ecr.us-east-2.amazonaws.com
+# Desde la carpeta backend/
 
-docker build -t spacex-backend .
-docker tag spacex-backend:latest \
-  <account-id>.dkr.ecr.us-east-2.amazonaws.com/spacex-backend:latest
-docker push \
-  <account-id>.dkr.ecr.us-east-2.amazonaws.com/spacex-backend:latest
+# 1. Registrar nueva revisión del task-definition
+aws ecs register-task-definition \
+  --cli-input-json file://task-definition.json \
+  --region us-east-2 \
+  --query 'taskDefinition.taskDefinitionArn' \
+  --output text
+
+# 2. Forzar redeploy del servicio
+aws ecs update-service \
+  --cluster spacex-cluster \
+  --service spacex-backend-service \
+  --task-definition spacex-backend-task \
+  --force-new-deployment \
+  --region us-east-2
+
+# 3. Verificar que tomó la revisión nueva
+aws ecs describe-services \
+  --cluster spacex-cluster \
+  --services spacex-backend-service \
+  --region us-east-2 \
+  --query 'services[0].taskDefinition' \
+  --output text
 ```
 
 ---
@@ -333,6 +435,16 @@ aws lambda get-function \
   --query 'Configuration.[FunctionName,Runtime,LastModified,State]'
 ```
 
+### Verificar secreto activo
+
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id spacex-backend-secrets \
+  --region us-east-2 \
+  --query 'SecretString' \
+  --output text
+```
+
 ---
 
 ## Arquitectura de componentes
@@ -346,25 +458,43 @@ GitHub Actions (CI/CD)
         │                            SpaceX API (cada 6h)
         │                                    │
         │                                    ▼
-        └── Deploy ECS ───────────► Amazon DynamoDB
-                │                   spaces_launches_spacex-infra
-                ▼
-         Amazon ECR
-         (imagen Docker)
-                │
-                ▼
-    Application Load Balancer
-    spacex-backend-alb
-                │
-                ▼
-         ECS Fargate
-    spacex-backend-service
-    (Node.js / Express / Puerto 4000)
-                │
-                ▼
-         Amazon DynamoDB
-         (lectura de datos)
+        │                           Amazon DynamoDB
+        │                      spaces_launches_spacex-infra
+        │
+        └── Deploy Backend ─────────► Amazon ECR
+                                      (imagen Docker)
+                                            │
+                                            ▼
+                                 Application Load Balancer
+                                   spacex-backend-alb
+                                            │
+                                            ▼
+                                      ECS Fargate
+                                 spacex-backend-service
+                               (Node.js / Express / Puerto 4000)
+                                            │
+                                            ▼
+                                     Amazon DynamoDB
+                                     (lectura de datos)
 ```
+
+---
+
+## Recursos de infraestructura
+
+| Recurso | Nombre |
+|---------|--------|
+| CloudFormation Stack | `spacex-infra` |
+| DynamoDB Table | `spaces_launches_spacex-infra` |
+| Lambda Function | `spacex-launches-handler` |
+| EventBridge Rule | `spacex-launches-every-6h` |
+| IAM Role Lambda | `spacex-lambda-execution-role-spacex-infra` |
+| IAM Role ECS | `ecsTaskExecutionRole-spacex-infra` |
+| Secrets Manager | `spacex-backend-secrets` (ARN sufijo: `E4UVIt`) |
+| ECS Cluster | `spacex-cluster` |
+| ECS Service | `spacex-backend-service` |
+| ECR Repository | `spacex-backend` |
+| Load Balancer | `spacex-backend-alb` |
 
 ---
 
@@ -375,6 +505,7 @@ GitHub Actions (CI/CD)
 | **Backend API** | `http://spacex-backend-alb-574561858.us-east-2.elb.amazonaws.com` |
 | **Swagger UI** | `http://spacex-backend-alb-574561858.us-east-2.elb.amazonaws.com/api-docs` |
 | **Health Check** | `http://spacex-backend-alb-574561858.us-east-2.elb.amazonaws.com/health` |
+| **Lambda URL** | `https://x2j244r7gcqo4bljyuqnwifayi0ruvxm.lambda-url.us-east-2.on.aws/` |
 
 ### Endpoints disponibles
 
@@ -385,3 +516,4 @@ GitHub Actions (CI/CD)
 | GET | `/launches/:id` | Detalle de un lanzamiento |
 | GET | `/stats/summary` | Resumen estadístico |
 | GET | `/stats/by-year` | Estadísticas por año |
+| GET | `/api-docs` | Swagger UI interactivo |
