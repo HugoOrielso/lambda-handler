@@ -54,12 +54,27 @@ lambda/
 
 ---
 
-## 🌐 Invocación manual
+### Invocar la Lambda manualmente
+```bash
+curl https://ijkudn6zzsaz5dvkrraiyy3gcu0jpows.lambda-url.us-east-2.on.aws/
+```
 
-La Lambda expone una **Function URL** pública para pruebas:
+> ⚠️ **Si devuelve error de permisos**, ejecuta:
+> ```bash
+> aws lambda add-permission \
+>   --function-name spacex-launches-handler \
+>   --statement-id AllowPublicAccess \
+>   --action lambda:InvokeFunctionUrl \
+>   --principal "*" \
+>   --function-url-auth-type NONE \
+>   --region us-east-2
+> ```
+> O ve a **Lambda → Configuración → URL de la función → Editar** y cambia el tipo de autorización a `NONE`.
+
+---
 
 ```
-GET https://x2j244r7gcqo4bljyuqnwifayi0ruvxm.lambda-url.us-east-2.on.aws/
+GET https://ijkudn6zzsaz5dvkrraiyy3gcu0jpows.lambda-url.us-east-2.on.aws/
 ```
 
 ### Respuesta esperada:

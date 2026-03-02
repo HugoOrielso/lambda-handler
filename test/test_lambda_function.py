@@ -2,6 +2,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import BotoCoreError  # 👈 IMPORT NECESARIO
 
 import lambda_function as lf
 
@@ -15,7 +16,7 @@ def sample_launch(id="abc123", date_utc="2006-03-24T22:30:00.000Z"):
         "flight_number": 1,
         "date_utc": date_utc,
         "date_local": "2006-03-25T10:30:00+12:00",
-        "upcoming": False,
+        "upcoming": False,   # 👈 aquí quitamos la "l" que se coló
         "success": True,
         "details": "Test mission",
         "launchpad": "pad-1",
@@ -50,7 +51,7 @@ def test_map_status(upcoming, success, expected):
     assert lf.map_status(launch) == expected
 
 
-# ---------- TEST transform_launch (antes parse_launch) ----------
+# ---------- TEST transform_launch ----------
 
 def test_transform_launch_ok():
     raw = sample_launch()
@@ -100,6 +101,24 @@ def test_upsert_launches_uses_batch_writer():
 def test_upsert_launches_empty_list_returns_zero():
     count = lf.upsert_launches([])
     assert count == 0
+
+
+def test_upsert_launches_raises_on_dynamo_error():
+    """
+    Verifica que si DynamoDB falla dentro del batch_writer,
+    la excepción BotoCoreError no se traga silenciosamente.
+    """
+    fake_table = MagicMock()
+    fake_batch = MagicMock()
+    fake_table.batch_writer.return_value.__enter__.return_value = fake_batch
+
+    items = [lf.transform_launch(sample_launch(id="x"))]
+
+    with patch.object(lf, "table", fake_table):
+        fake_batch.put_item.side_effect = BotoCoreError()
+
+        with pytest.raises(BotoCoreError):
+            lf.upsert_launches(items)
 
 
 # ---------- TEST process_launches ----------

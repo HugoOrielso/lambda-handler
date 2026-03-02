@@ -17,7 +17,6 @@ dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME)
 
 
-# ---------- LÓGICA DE NEGOCIO (pura / testeable) ----------
 
 def fetch_launches() -> List[Dict[str, Any]]:
     """
