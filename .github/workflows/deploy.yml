@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+
 env:
   AWS_REGION: us-east-2
   LAMBDA_FUNCTION_NAME: spacex-launches-handler
@@ -55,6 +56,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Save current version for rollback
+        id: prev_version
+        run: |
+          VERSION=$(aws lambda publish-version \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --description "pre-deploy snapshot - ${{ github.sha }}" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Version' \
+            --output text)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📌 Saved version $VERSION as rollback point"
+
       - name: Build deployment package
         run: |
           mkdir -p package
@@ -75,6 +88,44 @@ jobs:
           aws lambda wait function-updated \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
             --region ${{ env.AWS_REGION }}
+
+      - name: Smoke test — invoke Lambda
+        id: smoke_test
+        run: |
+          RESPONSE=$(aws lambda invoke \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --payload '{"httpMethod":"GET"}' \
+            --cli-binary-format raw-in-base64-out \
+            output.json \
+            --query 'StatusCode' \
+            --output text)
+
+          echo "status=$RESPONSE" >> $GITHUB_OUTPUT
+          cat output.json
+
+          if [ "$RESPONSE" != "200" ]; then
+            echo "❌ Smoke test failed with status $RESPONSE"
+            exit 1
+          fi
+          echo "✅ Smoke test passed"
+
+      - name: Rollback on failure
+        if: failure() && steps.smoke_test.conclusion == 'failure'
+        run: |
+          echo "🔁 Rolling back to version ${{ steps.prev_version.outputs.version }}"
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --s3-bucket "" || true
+
+          aws lambda update-alias \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --name live \
+            --function-version ${{ steps.prev_version.outputs.version }} \
+            --region ${{ env.AWS_REGION }} || true
+
+          echo "⚠️ Rolled back to version ${{ steps.prev_version.outputs.version }}"
 
       - name: Verify deployment
         run: |

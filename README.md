@@ -13,11 +13,11 @@ EventBridge (cada 6h)
  Lambda Function  ──────►  SpaceX API (v4/launches)
         │
         ▼
-   DynamoDB (spaces_launches)
+   DynamoDB (spaces_launches_spacex-infra)
         ▲
         │
 Function URL (invocación manual)
-https://x2j244r7gcqo4bljyuqnwifayi0ruvxm.lambda-url.us-east-2.on.aws/
+https://ijkudn6zzsaz5dvkrraiyy3gcu0jpows.lambda-url.us-east-2.on.aws/
 ```
 
 ---
@@ -25,15 +25,18 @@ https://x2j244r7gcqo4bljyuqnwifayi0ruvxm.lambda-url.us-east-2.on.aws/
 ## 📁 Estructura del repositorio
 
 ```
-lambda/
+lambda-handler/
 ├── lambda_function.py          # Código principal de la Lambda
 ├── requirements.txt            # Dependencias Python
+├── requirements-dev.txt        # Dependencias de desarrollo/testing
+├── conftest.py                 # Configuración de pytest
 ├── infrastructure.yml          # Infraestructura como código (CloudFormation)
+├── cloudformation.md           # Guía completa de despliegue
 ├── test/
-│   └── test_lambda_function.py # Pruebas unitarias
+│   └── test_lambda_function.py # Pruebas unitarias (17 tests, 97.75% cobertura)
 └── .github/
     └── workflows/
-        └── deploy-lambda.yml   # Pipeline CI/CD
+        └── deploy-lambda.yml   # Pipeline CI/CD con rollback automático
 ```
 
 ---
@@ -54,9 +57,21 @@ lambda/
 
 ---
 
-### Invocar la Lambda manualmente
+## 🌐 Invocar la Lambda manualmente
+
 ```bash
 curl https://ijkudn6zzsaz5dvkrraiyy3gcu0jpows.lambda-url.us-east-2.on.aws/
+```
+
+### Respuesta esperada:
+```json
+{
+  "total_from_api": 205,
+  "inserted_or_updated": 205,
+  "skipped": 0,
+  "processed_ids": ["abc123", "def456", "..."],
+  "skipped_ids": []
+}
 ```
 
 > ⚠️ **Si devuelve error de permisos**, ejecuta:
@@ -73,36 +88,20 @@ curl https://ijkudn6zzsaz5dvkrraiyy3gcu0jpows.lambda-url.us-east-2.on.aws/
 
 ---
 
-```
-GET https://ijkudn6zzsaz5dvkrraiyy3gcu0jpows.lambda-url.us-east-2.on.aws/
-```
-
-### Respuesta esperada:
-```json
-{
-  "total_from_api": 205,
-  "inserted_or_updated": 205,
-  "skipped": 0,
-  "processed_ids": ["abc123", "def456", "..."],
-  "skipped_ids": []
-}
-```
-
----
-
 ## 🛠️ Despliegue de infraestructura desde cero
 
 La infraestructura está definida en `infrastructure.yml` (CloudFormation) e incluye:
 
 | Recurso | Nombre |
 |---------|--------|
-| DynamoDB Table | `spaces_launches` |
-| IAM Role Lambda | `spacex-lambda-execution-role` |
+| DynamoDB Table | `spaces_launches_spacex-infra` |
+| IAM Role Lambda | `spacex-lambda-execution-role-spacex-infra` |
 | Lambda Function | `spacex-launches-handler` |
 | Lambda Function URL | pública, sin auth |
-| EventBridge Rule | cada 6 horas |
-| IAM Role ECS | `ecsTaskExecutionRole` |
-| Secrets Manager | `spacex-backend-secrets` |
+| EventBridge Rule | `spacex-launches-every-6h` (cada 6 horas) |
+| IAM Role ECS | `ecsTaskExecutionRole-spacex-infra` |
+
+> 📖 Para el proceso completo de despliegue y redespliegue desde cero ver [`cloudformation.md`](./cloudformation.md)
 
 ### Prerrequisitos
 - AWS CLI configurado (`aws configure`)
@@ -112,39 +111,25 @@ La infraestructura está definida en `infrastructure.yml` (CloudFormation) e inc
 ```bash
 aws cloudformation deploy \
   --template-file infrastructure.yml \
-  --stack-name spacex-stack \
+  --stack-name spacex-infra \
   --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides Environment=prod \
   --region us-east-2
 ```
 
 ### Verificar el stack
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name spacex-stack \
+  --stack-name spacex-infra \
   --region us-east-2 \
   --query 'Stacks[0].StackStatus'
 ```
 
-> ⚠️ Si los recursos ya existen en tu cuenta, CloudFormation los detecta y solo aplica los cambios necesarios.
-
 ---
 
-## 🔁 Pipeline CI/CD (GitHub Actions)
+## 🔁 Pipeline CI/CD con rollback automático
 
-El workflow `.github/workflows/deploy-lambda.yml` se activa automáticamente con cada push a `main` que modifique archivos relevantes.
-
-### Triggers
-```yaml
-on:
-  push:
-    branches: [main]
-    paths:
-      - "lambda_function.py"
-      - "requirements.txt"
-      - "test/**"
-      - ".github/workflows/deploy-lambda.yml"
-  workflow_dispatch:   # También permite ejecución manual desde GitHub
-```
+El workflow `.github/workflows/deploy-lambda.yml` se activa con cada push a `main`.
 
 ### Flujo del pipeline
 
@@ -152,26 +137,33 @@ on:
 Push a main
     │
     ▼
-┌─────────────────────────────┐
-│  JOB: test                  │
-│  1. Checkout código         │
-│  2. Setup Python 3.11       │
-│  3. Instalar dependencias   │
-│  4. Ejecutar pytest         │
-│     └─ cobertura mínima 80% │
-└────────────┬────────────────┘
-             │ (solo si tests pasan)
-             ▼
-┌─────────────────────────────┐
-│  JOB: deploy                │
-│  1. Checkout código         │
-│  2. Configurar AWS CLI      │
-│  3. Build package (.zip)    │
-│  4. Deploy a Lambda         │
-│  5. Esperar actualización   │
-│  6. Verificar despliegue    │
-└─────────────────────────────┘
+┌─────────────────────────────────┐
+│  JOB: test                      │
+│  1. Checkout código             │
+│  2. Setup Python 3.11           │
+│  3. Instalar dependencias       │
+│  4. Ejecutar pytest             │
+│     └─ cobertura mínima 80%     │
+└──────────────┬──────────────────┘
+               │ (solo si tests pasan)
+               ▼
+┌─────────────────────────────────┐
+│  JOB: deploy                    │
+│  1. Guardar versión actual      │  ← snapshot para rollback
+│     como punto de restauración  │
+│  2. Build package (.zip)        │
+│  3. Deploy a Lambda             │
+│  4. Esperar actualización       │
+│  5. Smoke test (invoke + 200)   │
+│     ├─ ✅ OK → deploy exitoso   │
+│     └─ ❌ Falla → rollback      │  ← vuelve a versión anterior
+│  6. Verificar despliegue        │
+└─────────────────────────────────┘
 ```
+
+### ¿Cómo funciona el rollback?
+
+Antes de cada deploy el pipeline publica una **versión numerada** de la Lambda actual como snapshot. Después del deploy se corre un smoke test que invoca la Lambda y verifica que responde `200`. Si falla, el pipeline restaura automáticamente la versión anterior sin intervención manual.
 
 ### Secrets requeridos en GitHub
 
@@ -188,35 +180,43 @@ Ve a **Settings → Secrets and variables → Actions** y agrega:
 
 ### Instalar dependencias
 ```bash
-pip install -r requirements.txt pytest pytest-cov
+python -m pip install -r requirements-dev.txt
 ```
 
 ### Ejecutar pruebas
 ```bash
-pytest test/test_lambda_function.py -v \
+python -m pytest test/test_lambda_function.py -v \
   --cov=lambda_function \
   --cov-report=term-missing \
   --cov-fail-under=80
 ```
 
-### Cobertura esperada
-El pipeline requiere **mínimo 80% de cobertura**. Las pruebas cubren:
+### Resultado esperado
+```
+17 passed in 1.52s
+Coverage: 97.75% ✅
+```
 
-- `map_status` → derivación de estados (upcoming, success, failed, unknown)
-- `transform_launch` → transformación y validación de campos
-- `upsert_launches` → escritura en DynamoDB con batch_writer
-- `process_launches` → orquestación completa
-- `fetch_launches` → manejo de errores HTTP
-- `lambda_handler` → respuestas HTTP vs EventBridge
+### Cobertura por módulo
+
+| Función | Descripción |
+|---------|-------------|
+| `map_status` | Derivación de estados (upcoming, success, failed, unknown) |
+| `transform_launch` | Transformación y validación de campos |
+| `upsert_launches` | Escritura en DynamoDB con batch_writer |
+| `process_launches` | Orquestación completa del flujo |
+| `fetch_launches` | Manejo de errores HTTP de la API |
+| `lambda_handler` | Respuestas HTTP vs EventBridge |
 
 ---
 
 ## 🗄️ Tabla DynamoDB
 
-**Nombre:** `spaces_launches`  
-**Región:** `us-east-2`  
-**Modo:** On-demand (Pay per request)  
+**Nombre:** `spaces_launches_spacex-infra`
+**Región:** `us-east-2`
+**Modo:** On-demand (Pay per request)
 **Partition key:** `launch_id` (String)
+**GSI:** `date_utc-index` — permite consultas por fecha
 
 ### Campos almacenados
 
@@ -225,7 +225,7 @@ El pipeline requiere **mínimo 80% de cobertura**. Las pruebas cubren:
 | `launch_id` | String | ID único del lanzamiento (PK) |
 | `mission_name` | String | Nombre de la misión |
 | `flight_number` | Number | Número de vuelo |
-| `date_utc` | String | Fecha UTC del lanzamiento |
+| `date_utc` | String (GSI) | Fecha UTC del lanzamiento |
 | `status` | String | upcoming / success / failed / unknown |
 | `rocket_id` | String | ID del cohete |
 | `launchpad_id` | String | ID de la plataforma |
